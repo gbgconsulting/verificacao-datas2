@@ -2,7 +2,7 @@ import os
 from flask import Flask, render_template, request, send_file, redirect, url_for, flash
 from datetime import datetime
 from openpyxl import load_workbook, Workbook
-from openpyxl.styles import PatternFill
+from openpyxl.styles import PatternFill, Font
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -93,7 +93,6 @@ def index():
         ws_relatorio['E1'] = "Status"
 
         # Estilo para cabeçalhos
-        from openpyxl.styles import Font
         header_font = Font(bold=True)
         for cell in ws_relatorio[1]:
             cell.font = header_font
@@ -130,7 +129,7 @@ def index():
 
     return render_template('index.html')
 
+# Configuração para produção (Render)
 if __name__ == '__main__':
-    # Configuração para desenvolvimento local
     port = int(os.environ.get('PORT', 5000))
-    app.run(debug=False, host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=port)
