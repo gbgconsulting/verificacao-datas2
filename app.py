@@ -1,4 +1,5 @@
 import os
+import time
 from flask import Flask, render_template, request, send_file, redirect, url_for, flash
 from datetime import datetime
 from openpyxl import load_workbook, Workbook
@@ -17,6 +18,8 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
+        start_time = time.time()
+        
         excel = request.files.get('excel')
         datas = request.files.get('datas')
         coluna = request.form.get('coluna', 'F')
@@ -26,14 +29,28 @@ def index():
             flash('Por favor, envie ambos os arquivos.')
             return redirect(request.url)
 
+        # Verificar tamanho dos arquivos
+        excel.seek(0, 2)  # Ir para o final
+        excel_size = excel.tell()
+        excel.seek(0)  # Voltar ao início
+        
+        if excel_size > 10 * 1024 * 1024:  # 10MB
+            flash('Arquivo Excel muito grande. Máximo 10MB.')
+            return redirect(request.url)
+
         excel_filename = secure_filename(excel.filename)
         datas_filename = secure_filename(datas.filename)
         excel_path = os.path.join(UPLOAD_FOLDER, excel_filename)
         datas_path = os.path.join(UPLOAD_FOLDER, datas_filename)
-        excel.save(excel_path)
-        datas.save(datas_path)
+        
+        try:
+            excel.save(excel_path)
+            datas.save(datas_path)
+        except Exception as e:
+            flash(f'Erro ao salvar arquivos: {e}')
+            return redirect(request.url)
 
-        # Processar os arquivos
+        # Processar arquivo de datas
         try:
             with open(datas_path, 'r', encoding='utf-8') as f:
                 datas_monitoradas = [
@@ -44,8 +61,9 @@ def index():
             flash(f"Erro ao ler o arquivo de datas: {e}")
             return redirect(request.url)
 
+        # Carregar planilha com timeout
         try:
-            wb = load_workbook(excel_path)
+            wb = load_workbook(excel_path, read_only=True)  # Modo read-only para melhor performance
             aba = wb.active
         except Exception as e:
             flash(f"Erro ao abrir o arquivo Excel: {e}")
@@ -59,25 +77,35 @@ def index():
         # Lista para armazenar ocorrências encontradas
         ocorrencias = []
 
-        for linha in range(2, aba.max_row + 1):
-            celula = aba[f"{coluna}{linha}"]
-            valor = celula.value
-            if isinstance(valor, datetime):
-                if valor.date() in datas_monitoradas:
-                    celula.fill = preenchimento
-                    total_destacadas += 1
-                    
-                    # Adicionar à lista de ocorrências
-                    ocorrencias.append({
-                        'linha': linha,
-                        'data': valor.strftime("%d/%m/%Y"),
-                        'valor_celula': str(valor),
-                        'coluna': coluna
-                    })
+        # Processar linhas com verificação de timeout
+        max_rows = min(aba.max_row, 10000)  # Limitar a 10.000 linhas para evitar timeout
+        
+        for linha in range(2, max_rows + 1):
+            # Verificar timeout a cada 1000 linhas
+            if linha % 1000 == 0:
+                if time.time() - start_time > 25:  # 25 segundos de timeout
+                    flash('Processamento muito lento. Tente com uma planilha menor.')
+                    return redirect(request.url)
+            
+            try:
+                celula = aba[f"{coluna}{linha}"]
+                valor = celula.value
+                if isinstance(valor, datetime):
+                    if valor.date() in datas_monitoradas:
+                        total_destacadas += 1
+                        
+                        # Adicionar à lista de ocorrências
+                        ocorrencias.append({
+                            'linha': linha,
+                            'data': valor.strftime("%d/%m/%Y"),
+                            'valor_celula': str(valor),
+                            'coluna': coluna
+                        })
+            except Exception as e:
+                continue  # Pular linhas com erro
 
-        # Salvar planilha destacada
-        saida_path = os.path.join(UPLOAD_FOLDER, 'planilha_destacada.xlsx')
-        wb.save(saida_path)
+        # Fechar planilha original
+        wb.close()
 
         # Criar relatório de ocorrências
         relatorio_path = os.path.join(UPLOAD_FOLDER, 'relatorio_ocorrencias.xlsx')
@@ -111,16 +139,19 @@ def index():
         ws_relatorio[f'A{linha_resumo + 1}'] = f"Total de ocorrências encontradas: {total_destacadas}"
         ws_relatorio[f'A{linha_resumo + 2}'] = f"Datas monitoradas: {len(datas_monitoradas)}"
         ws_relatorio[f'A{linha_resumo + 3}'] = f"Datas monitoradas: {', '.join([d.strftime('%d/%m/%Y') for d in datas_monitoradas])}"
+        ws_relatorio[f'A{linha_resumo + 4}'] = f"Linhas processadas: {max_rows - 1}"
+        ws_relatorio[f'A{linha_resumo + 5}'] = f"Tempo de processamento: {time.time() - start_time:.2f} segundos"
 
         # Ajustar largura das colunas
         for col in ['A', 'B', 'C', 'D', 'E']:
             ws_relatorio.column_dimensions[col].width = 15
 
         wb_relatorio.save(relatorio_path)
+        wb_relatorio.close()
 
         flash(f'Processamento concluído! {total_destacadas} ocorrências encontradas na coluna {coluna}.')
         
-        # Retornar ambos os arquivos
+        # Retornar relatório
         if total_destacadas > 0:
             return send_file(relatorio_path, as_attachment=True, download_name='relatorio_ocorrencias.xlsx')
         else:
